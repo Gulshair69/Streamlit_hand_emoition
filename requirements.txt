@@ -1,8 +1,13 @@
 streamlit>=1.36.0
 # Pin TensorFlow to a version that has wheels for the Streamlit Python runtime.
 # Streamlit currently uses CPython 3.10/3.11, but we keep a fallback for 3.12.
-tensorflow==2.15.1; python_version<'3.12'
-tensorflow==2.16.1; python_version>='3.12'
+#
+# Streamlit Community Cloud can run on different CPU architectures.
+# On ARM64 use `tensorflow-aarch64` (otherwise `tensorflow` may show "no matching distribution").
+tensorflow==2.15.1; platform_machine=='x86_64' and python_version<'3.12'
+tensorflow==2.16.1; platform_machine=='x86_64' and python_version>='3.12'
+tensorflow-aarch64==2.15.1; platform_machine=='aarch64' and python_version<'3.12'
+tensorflow-aarch64==2.16.1; platform_machine=='aarch64' and python_version>='3.12'
 
 # OpenCV is optional (image mode works without it). Video mode will
 # show an error if OpenCV isn't installed.
