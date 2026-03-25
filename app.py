@@ -18,7 +18,7 @@ except Exception:
     CV2_AVAILABLE = False
 import numpy as np
 import streamlit as st
-from PIL import Image
+from PIL import Image, ImageDraw, ImageFont
 
 # TensorFlow may not be available on the Streamlit runtime (e.g. Python 3.13
 # without TF wheels). We treat it as an optional dependency and show a clear
@@ -42,20 +42,39 @@ except Exception:
     webrtc_streamer = None  # type: ignore
 
 
-APP_TITLE = "Hand Gesture Recognition"
+try:
+    import mediapipe as mp  # type: ignore
+
+    MP_AVAILABLE = True
+except Exception:
+    mp = None  # type: ignore
+    MP_AVAILABLE = False
+
+
+APP_TITLE = "Emotion & Hand Gesture Recognition"
 DEFAULT_MODEL_NAME = "best_hand_gesture_model.keras"
+EMOTION_MODEL_NAME = "best_emotion_model.keras"
 DEFAULT_IMG_SIZE = 128
+EMOTION_LABELS = [
+    "angry",
+    "disgusted",
+    "fearful",
+    "happy",
+    "neutral",
+    "sad",
+    "surprised",
+]
 FALLBACK_LABELS = [
-    "palm",
-    "l",
-    "fist",
-    "fist_moved",
-    "thumb",
-    "index",
-    "ok",
-    "palm_moved",
-    "c",
-    "down",
+    "01_palm",
+    "02_l",
+    "03_fist",
+    "04_fist_moved",
+    "05_thumb",
+    "06_index",
+    "07_ok",
+    "08_palm_moved",
+    "09_c",
+    "10_down",
 ]
 
 _LABEL_PREFIX_RE = re.compile(r"^\s*\d+_(.+?)\s*$")
@@ -70,14 +89,20 @@ def format_label_for_display(label: str) -> str:
     return match.group(1) if match else raw
 
 
-def _find_model_path() -> Optional[Path]:
+def _find_model_path(model_name: str) -> Optional[Path]:
     cwd = Path(".")
-    exact = cwd / DEFAULT_MODEL_NAME
+    exact = cwd / model_name
     if exact.exists():
         return exact
 
+    # Fallback: return the first matching file if present.
     keras_files = sorted(cwd.glob("*.keras"))
-    if keras_files:
+    for p in keras_files:
+        if p.name == model_name:
+            return p
+
+    # Last resort: if there is exactly one .keras file, use it.
+    if len(keras_files) == 1:
         return keras_files[0]
     return None
 
@@ -133,10 +158,26 @@ def get_model() -> Any:
             "Switch Streamlit's Python runtime to <= 3.12 and redeploy, "
             "or install TensorFlow."
         )
-    model_path = _find_model_path()
+    model_path = _find_model_path(DEFAULT_MODEL_NAME)
     if model_path is None:
         raise FileNotFoundError(
             f"Model not found. Put '{DEFAULT_MODEL_NAME}' (or any .keras file) in this folder."
+        )
+    return load_model(model_path)
+
+
+@st.cache_resource
+def get_emotion_model() -> Any:
+    if tf is None or load_model is None:
+        raise ImportError(
+            "TensorFlow is not available in this Streamlit environment. "
+            "Switch Streamlit's Python runtime to <= 3.12 and redeploy, "
+            "or install TensorFlow."
+        )
+    model_path = _find_model_path(EMOTION_MODEL_NAME)
+    if model_path is None:
+        raise FileNotFoundError(
+            f"Model not found. Put '{EMOTION_MODEL_NAME}' (or any .keras file) in this folder."
         )
     return load_model(model_path)
 
@@ -187,6 +228,199 @@ def predict_image(
     return label, conf, probs
 
 
+def detect_vgg_preprocess_from_model(model: Any) -> bool:
+    """
+    Heuristic: if the model looks like it contains VGG16 conv blocks,
+    use `tensorflow.keras.applications.vgg16.preprocess_input`.
+    """
+    try:
+        for layer in getattr(model, "layers", []):
+            name = str(getattr(layer, "name", "")).lower()
+            if "block1_conv1" in name or "block2_conv1" in name or "vgg" in name:
+                return True
+    except Exception:
+        pass
+    return False
+
+
+def _clamp_bbox(x1: int, y1: int, x2: int, y2: int, w: int, h: int) -> Tuple[int, int, int, int]:
+    x1 = max(0, min(x1, w - 1))
+    y1 = max(0, min(y1, h - 1))
+    x2 = max(0, min(x2, w))
+    y2 = max(0, min(y2, h))
+    if x2 <= x1:
+        x2 = min(w, x1 + 1)
+    if y2 <= y1:
+        y2 = min(h, y1 + 1)
+    return x1, y1, x2, y2
+
+
+def _pad_bbox(
+    x1: int, y1: int, x2: int, y2: int, pad_ratio: float, w: int, h: int
+) -> Tuple[int, int, int, int]:
+    bw = max(1, x2 - x1)
+    bh = max(1, y2 - y1)
+    pad_x = int(bw * pad_ratio)
+    pad_y = int(bh * pad_ratio)
+    return _clamp_bbox(x1 - pad_x, y1 - pad_y, x2 + pad_x, y2 + pad_y, w, h)
+
+
+@st.cache_resource
+def get_face_detector() -> Any:
+    if not MP_AVAILABLE or mp is None:
+        raise ImportError("MediaPipe is not installed. Multi-person Emotion detection requires MediaPipe.")
+    # model_selection=1 tends to work well for a broad range of face sizes.
+    return mp.solutions.face_detection.FaceDetection(model_selection=1, min_detection_confidence=0.5)
+
+
+@st.cache_resource
+def get_hands_detector_static() -> Any:
+    if not MP_AVAILABLE or mp is None:
+        raise ImportError("MediaPipe is not installed. Multi-person Hand detection requires MediaPipe.")
+    return mp.solutions.hands.Hands(
+        static_image_mode=True,
+        max_num_hands=4,
+        min_detection_confidence=0.5,
+    )
+
+
+@st.cache_resource
+def get_hands_detector_stream() -> Any:
+    if not MP_AVAILABLE or mp is None:
+        raise ImportError("MediaPipe is not installed. Multi-person Hand detection requires MediaPipe.")
+    return mp.solutions.hands.Hands(
+        static_image_mode=False,
+        max_num_hands=4,
+        min_detection_confidence=0.5,
+        min_tracking_confidence=0.5,
+    )
+
+
+def detect_faces(img_rgb: np.ndarray, pad_ratio: float = 0.25, max_faces: int = 6) -> List[Tuple[int, int, int, int]]:
+    if not MP_AVAILABLE:
+        return []
+    detector = get_face_detector()
+    h, w = img_rgb.shape[:2]
+    results = detector.process(img_rgb)
+    bboxes: List[Tuple[int, int, int, int]] = []
+    detections = getattr(results, "detections", None) or []
+    for det in detections[:max_faces]:
+        rb = det.location_data.relative_bounding_box
+        x1 = int(rb.xmin * w)
+        y1 = int(rb.ymin * h)
+        x2 = int((rb.xmin + rb.width) * w)
+        y2 = int((rb.ymin + rb.height) * h)
+        bboxes.append(_pad_bbox(x1, y1, x2, y2, pad_ratio, w, h))
+    return bboxes
+
+
+def detect_hands(img_rgb: np.ndarray, pad_ratio: float = 0.25, max_hands: int = 4) -> List[Tuple[int, int, int, int]]:
+    if not MP_AVAILABLE:
+        return []
+    detector = get_hands_detector_static()
+    h, w = img_rgb.shape[:2]
+    results = detector.process(img_rgb)
+    bboxes: List[Tuple[int, int, int, int]] = []
+    landmarks_list = getattr(results, "multi_hand_landmarks", None) or []
+    for hand_landmarks in landmarks_list[:max_hands]:
+        xs = [lm.x for lm in hand_landmarks.landmark]
+        ys = [lm.y for lm in hand_landmarks.landmark]
+        x1 = int(min(xs) * w)
+        y1 = int(min(ys) * h)
+        x2 = int(max(xs) * w)
+        y2 = int(max(ys) * h)
+        bboxes.append(_pad_bbox(x1, y1, x2, y2, pad_ratio, w, h))
+    return bboxes
+
+
+def detect_hands_stream(img_rgb: np.ndarray, pad_ratio: float = 0.25, max_hands: int = 4) -> List[Tuple[int, int, int, int]]:
+    if not MP_AVAILABLE:
+        return []
+    detector = get_hands_detector_stream()
+    h, w = img_rgb.shape[:2]
+    results = detector.process(img_rgb)
+    bboxes: List[Tuple[int, int, int, int]] = []
+    landmarks_list = getattr(results, "multi_hand_landmarks", None) or []
+    for hand_landmarks in landmarks_list[:max_hands]:
+        xs = [lm.x for lm in hand_landmarks.landmark]
+        ys = [lm.y for lm in hand_landmarks.landmark]
+        x1 = int(min(xs) * w)
+        y1 = int(min(ys) * h)
+        x2 = int(max(xs) * w)
+        y2 = int(max(ys) * h)
+        bboxes.append(_pad_bbox(x1, y1, x2, y2, pad_ratio, w, h))
+    return bboxes
+
+
+def annotate_image(
+    img_rgb: np.ndarray,
+    detections: List[dict],
+    color: Tuple[int, int, int] = (0, 255, 0),
+) -> np.ndarray:
+    """
+    Draw bounding boxes + labels on an RGB image using PIL.
+    Each detection: {"bbox": (x1,y1,x2,y2), "label": str, "confidence": float}
+    """
+    pil_img = Image.fromarray(img_rgb)
+    draw = ImageDraw.Draw(pil_img)
+    font = ImageFont.load_default()
+    for det in detections:
+        x1, y1, x2, y2 = det["bbox"]
+        label = str(det.get("label", ""))
+        conf = float(det.get("confidence", 0.0))
+        text = f"{label} ({conf * 100:.1f}%)"
+        draw.rectangle([x1, y1, x2, y2], outline=color, width=2)
+        # Text background for readability.
+        text_w = draw.textlength(text, font=font)
+        text_h = 12
+        tx1 = x1
+        ty1 = max(0, y1 - text_h - 2)
+        draw.rectangle([tx1, ty1, tx1 + int(text_w) + 4, ty1 + text_h + 2], fill=color)
+        draw.text((tx1 + 2, ty1 + 1), text, fill=(0, 0, 0), font=font)
+    return np.array(pil_img)
+
+
+def predict_emotion_multi(
+    img_rgb: np.ndarray,
+    model: Any,
+    use_vgg_preprocess: bool,
+) -> List[dict]:
+    bboxes = detect_faces(img_rgb)
+    if not bboxes:
+        bboxes = [(0, 0, img_rgb.shape[1], img_rgb.shape[0])]
+
+    detections: List[dict] = []
+    for (x1, y1, x2, y2) in bboxes:
+        crop = img_rgb[y1:y2, x1:x2]
+        label, conf, _ = predict_image(crop, model, EMOTION_LABELS, use_vgg_preprocess=use_vgg_preprocess)
+        detections.append({"bbox": (x1, y1, x2, y2), "label": label, "confidence": conf})
+    return detections
+
+
+def predict_hand_multi(
+    img_rgb: np.ndarray,
+    model: Any,
+    class_names: List[str],
+    use_vgg_preprocess: bool,
+) -> List[dict]:
+    bboxes = detect_hands(img_rgb)
+    if not bboxes:
+        bboxes = [(0, 0, img_rgb.shape[1], img_rgb.shape[0])]
+
+    detections: List[dict] = []
+    for (x1, y1, x2, y2) in bboxes:
+        crop = img_rgb[y1:y2, x1:x2]
+        label, conf, _ = predict_image(crop, model, class_names, use_vgg_preprocess=use_vgg_preprocess)
+        detections.append(
+            {
+                "bbox": (x1, y1, x2, y2),
+                "label": format_label_for_display(label),
+                "confidence": conf,
+            }
+        )
+    return detections
+
+
 def render_prediction_result(label: str, conf: float) -> None:
     display_label = format_label_for_display(label)
     st.success(f"Prediction: {display_label}")
@@ -194,15 +428,20 @@ def render_prediction_result(label: str, conf: float) -> None:
 
 
 def handle_single_image(model: Any, class_names: List[str], use_vgg_preprocess: bool) -> None:
-    uploaded = st.file_uploader("Upload one image", type=["png", "jpg", "jpeg", "bmp"], key="single_uploader")
-    if uploaded is None:
+    snapshot = st.camera_input("Capture one image (webcam)")
+    if snapshot is None:
         return
 
-    image = Image.open(uploaded).convert("RGB")
+    image = Image.open(snapshot).convert("RGB")
     img_rgb = np.array(image)
-    st.image(img_rgb, caption="Uploaded image", use_container_width=True)
-    label, conf, _ = predict_image(img_rgb, model, class_names, use_vgg_preprocess=use_vgg_preprocess)
-    render_prediction_result(label, conf)
+
+    detections = predict_hand_multi(img_rgb, model, class_names, use_vgg_preprocess=use_vgg_preprocess)
+    annotated = annotate_image(img_rgb, detections, color=(0, 200, 0))
+
+    st.image(annotated, caption="Detected hands", use_container_width=True)
+    st.write(f"Hands detected: {len(detections)}")
+    for i, det in enumerate(detections, start=1):
+        st.write(f"{i}. **{det['label']}** - {det['confidence'] * 100:.2f}%")
 
 
 def handle_multiple_images(model: Any, class_names: List[str], use_vgg_preprocess: bool) -> None:
@@ -220,12 +459,16 @@ def handle_multiple_images(model: Any, class_names: List[str], use_vgg_preproces
     for i, uploaded in enumerate(files):
         image = Image.open(uploaded).convert("RGB")
         img_rgb = np.array(image)
-        label, conf, _ = predict_image(img_rgb, model, class_names, use_vgg_preprocess=use_vgg_preprocess)
-        display_label = format_label_for_display(label)
+        detections = predict_hand_multi(img_rgb, model, class_names, use_vgg_preprocess=use_vgg_preprocess)
+        annotated = annotate_image(img_rgb, detections, color=(0, 200, 0))
         with cols[i % 3]:
-            st.image(img_rgb, caption=uploaded.name, use_container_width=True)
-            st.write(f"**{display_label}**")
-            st.caption(f"{conf * 100:.2f}%")
+            st.image(annotated, caption=uploaded.name, use_container_width=True)
+            if detections:
+                best = max(detections, key=lambda d: float(d.get("confidence", 0.0)))
+                st.write(f"**{best['label']}**")
+                st.caption(f"{best['confidence'] * 100:.2f}%")
+            else:
+                st.caption("No hands detected")
 
 
 def handle_video(model: Any, class_names: List[str], use_vgg_preprocess: bool) -> None:
@@ -288,33 +531,126 @@ def handle_video(model: Any, class_names: List[str], use_vgg_preprocess: bool) -
     st.dataframe(rows, use_container_width=True)
 
 
-class GestureVideoProcessor(VideoProcessorBase):
-    def __init__(self) -> None:
-        self.model = get_model()
-        self.class_names = get_labels()
-        self.use_vgg_preprocess = bool(st.session_state.get("use_vgg_preprocess", False))
+def predict_hand_multi_stream(
+    img_rgb: np.ndarray,
+    model: Any,
+    class_names: List[str],
+    use_vgg_preprocess: bool,
+) -> List[dict]:
+    bboxes = detect_hands_stream(img_rgb)
+    if not bboxes:
+        bboxes = [(0, 0, img_rgb.shape[1], img_rgb.shape[0])]
+
+    detections: List[dict] = []
+    for (x1, y1, x2, y2) in bboxes:
+        crop = img_rgb[y1:y2, x1:x2]
+        label, conf, _ = predict_image(crop, model, class_names, use_vgg_preprocess=use_vgg_preprocess)
+        detections.append(
+            {
+                "bbox": (x1, y1, x2, y2),
+                "label": format_label_for_display(label),
+                "confidence": conf,
+            }
+        )
+    return detections
+
+
+class HandVideoProcessor(VideoProcessorBase):
+    def __init__(self, sample_every_n: int = 15) -> None:
+        self.sample_every_n = max(1, int(sample_every_n))
+        self.frame_idx = 0
+        self.last_annotated_bgr: Optional[np.ndarray] = None
+        self.last_detections: List[dict] = []
         self.last_label = ""
         self.last_conf = 0.0
+        self.error_msg: Optional[str] = None
+
+        try:
+            self.model = get_model()
+            self.class_names = get_labels()
+            force_vgg = bool(st.session_state.get("force_vgg_preprocess", False))
+            auto_vgg = detect_vgg_preprocess_from_model(self.model)
+            self.use_vgg_preprocess = force_vgg or auto_vgg
+        except Exception as e:
+            self.error_msg = str(e)
+            self.model = None
+            self.class_names = []
+            self.use_vgg_preprocess = False
 
     def recv(self, frame):
-        img = frame.to_ndarray(format="bgr24")
-        if CV2_AVAILABLE:
-            rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)  # type: ignore[union-attr]
-        else:
-            # BGR -> RGB without OpenCV.
-            rgb = img[..., ::-1]
-        label, conf, _ = predict_image(
-            rgb,
+        img_bgr = frame.to_ndarray(format="bgr24")
+        self.frame_idx += 1
+
+        if self.error_msg is not None:
+            # Can't run inference: return original frame.
+            return frame.from_ndarray(img_bgr, format="bgr24")
+
+        if self.last_annotated_bgr is not None and (self.frame_idx % self.sample_every_n) != 0:
+            return frame.from_ndarray(self.last_annotated_bgr, format="bgr24")
+
+        img_rgb = img_bgr[..., ::-1]
+        detections = predict_hand_multi_stream(
+            img_rgb,
             self.model,
             self.class_names,
             use_vgg_preprocess=self.use_vgg_preprocess,
         )
-        self.last_label = format_label_for_display(label)
-        self.last_conf = conf
-        text = f"{self.last_label} ({conf * 100:.1f}%)"
-        if CV2_AVAILABLE:
-            cv2.putText(img, text, (12, 36), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)  # type: ignore[union-attr]
-        return frame.from_ndarray(img, format="bgr24")
+        annotated_rgb = annotate_image(img_rgb, detections, color=(0, 200, 0))
+        annotated_bgr = annotated_rgb[..., ::-1]
+
+        self.last_detections = detections
+        if detections:
+            best = max(detections, key=lambda d: float(d.get("confidence", 0.0)))
+            self.last_label = best.get("label", "")
+            self.last_conf = float(best.get("confidence", 0.0))
+
+        self.last_annotated_bgr = annotated_bgr
+        return frame.from_ndarray(annotated_bgr, format="bgr24")
+
+
+class EmotionVideoProcessor(VideoProcessorBase):
+    def __init__(self, sample_every_n: int = 15) -> None:
+        self.sample_every_n = max(1, int(sample_every_n))
+        self.frame_idx = 0
+        self.last_annotated_bgr: Optional[np.ndarray] = None
+        self.last_detections: List[dict] = []
+        self.last_label = ""
+        self.last_conf = 0.0
+        self.error_msg: Optional[str] = None
+
+        try:
+            self.model = get_emotion_model()
+            force_vgg = bool(st.session_state.get("force_vgg_preprocess", False))
+            auto_vgg = detect_vgg_preprocess_from_model(self.model)
+            self.use_vgg_preprocess = force_vgg or auto_vgg
+        except Exception as e:
+            self.error_msg = str(e)
+            self.model = None
+            self.use_vgg_preprocess = False
+
+    def recv(self, frame):
+        img_bgr = frame.to_ndarray(format="bgr24")
+        self.frame_idx += 1
+
+        if self.error_msg is not None or self.model is None:
+            return frame.from_ndarray(img_bgr, format="bgr24")
+
+        if self.last_annotated_bgr is not None and (self.frame_idx % self.sample_every_n) != 0:
+            return frame.from_ndarray(self.last_annotated_bgr, format="bgr24")
+
+        img_rgb = img_bgr[..., ::-1]
+        detections = predict_emotion_multi(img_rgb, self.model, use_vgg_preprocess=self.use_vgg_preprocess)
+        annotated_rgb = annotate_image(img_rgb, detections, color=(200, 0, 0))
+        annotated_bgr = annotated_rgb[..., ::-1]
+
+        self.last_detections = detections
+        if detections:
+            best = max(detections, key=lambda d: float(d.get("confidence", 0.0)))
+            self.last_label = best.get("label", "")
+            self.last_conf = float(best.get("confidence", 0.0))
+
+        self.last_annotated_bgr = annotated_bgr
+        return frame.from_ndarray(annotated_bgr, format="bgr24")
 
 
 def handle_live_webcam() -> None:
@@ -326,9 +662,10 @@ def handle_live_webcam() -> None:
 
     st.subheader("Live Webcam")
     if WEBRTC_AVAILABLE:
+        sample_every_n = st.slider("Run inference every N frames", min_value=1, max_value=30, value=5, step=1)
         ctx = webrtc_streamer(
-            key="gesture-live",
-            video_processor_factory=GestureVideoProcessor,
+            key="hand-live",
+            video_processor_factory=lambda: HandVideoProcessor(sample_every_n=sample_every_n),
             media_stream_constraints={"video": True, "audio": False},
             async_processing=True,
         )
@@ -345,26 +682,107 @@ def handle_live_webcam() -> None:
         st.image(img_rgb, caption="Captured snapshot", use_container_width=True)
         model = get_model()
         labels = get_labels()
-        use_vgg = bool(st.session_state.get("use_vgg_preprocess", False))
-        label, conf, _ = predict_image(img_rgb, model, labels, use_vgg_preprocess=use_vgg)
-        render_prediction_result(label, conf)
+        force_vgg = bool(st.session_state.get("force_vgg_preprocess", False))
+        auto_vgg = detect_vgg_preprocess_from_model(model)
+        use_vgg = force_vgg or auto_vgg
+        detections = predict_hand_multi(img_rgb, model, labels, use_vgg_preprocess=use_vgg)
+        annotated = annotate_image(img_rgb, detections, color=(0, 200, 0))
+        st.image(annotated, caption="Hand detection result", use_container_width=True)
+        st.write(f"Hands detected: {len(detections)}")
+        for i, det in enumerate(detections, start=1):
+            st.write(f"{i}. **{det['label']}** - {det['confidence'] * 100:.2f}%")
+
+
+def handle_emotion_single_image(model: Any, use_vgg_preprocess: bool) -> None:
+    snapshot = st.camera_input("Capture one image (webcam) for emotion detection")
+    if snapshot is None:
+        return
+
+    image = Image.open(snapshot).convert("RGB")
+    img_rgb = np.array(image)
+    detections = predict_emotion_multi(img_rgb, model, use_vgg_preprocess=use_vgg_preprocess)
+    annotated = annotate_image(img_rgb, detections, color=(200, 0, 0))
+
+    st.image(annotated, caption="Detected faces", use_container_width=True)
+    st.write(f"Faces detected: {len(detections)}")
+    for i, det in enumerate(detections, start=1):
+        st.write(f"{i}. **{det['label']}** - {det['confidence'] * 100:.2f}%")
+
+
+def handle_emotion_multiple_images(model: Any, use_vgg_preprocess: bool) -> None:
+    files = st.file_uploader(
+        "Upload multiple images for emotion detection",
+        type=["png", "jpg", "jpeg", "bmp"],
+        accept_multiple_files=True,
+        key="emotion_multi_uploader",
+    )
+    if not files:
+        return
+
+    st.subheader("Emotion results")
+    cols = st.columns(3)
+    for i, uploaded in enumerate(files):
+        image = Image.open(uploaded).convert("RGB")
+        img_rgb = np.array(image)
+        detections = predict_emotion_multi(img_rgb, model, use_vgg_preprocess=use_vgg_preprocess)
+        annotated = annotate_image(img_rgb, detections, color=(200, 0, 0))
+        with cols[i % 3]:
+            st.image(annotated, caption=uploaded.name, use_container_width=True)
+            if detections:
+                best = max(detections, key=lambda d: float(d.get("confidence", 0.0)))
+                st.write(f"**{best['label']}**")
+                st.caption(f"{best['confidence'] * 100:.2f}%")
+            else:
+                st.caption("No faces detected")
+
+
+def handle_emotion_live_webcam() -> None:
+    if not WEBRTC_AVAILABLE:
+        st.warning(
+            "Live webcam needs `streamlit-webrtc`. Install dependencies from requirements.txt and restart."
+        )
+        return
+
+    st.subheader("Live Webcam (Emotion)")
+    sample_every_n = st.slider("Run inference every N frames", min_value=1, max_value=30, value=5, step=1)
+    ctx = webrtc_streamer(
+        key="emotion-live",
+        video_processor_factory=lambda: EmotionVideoProcessor(sample_every_n=sample_every_n),
+        media_stream_constraints={"video": True, "audio": False},
+        async_processing=True,
+    )
+    if ctx and ctx.video_processor:
+        faces = getattr(ctx.video_processor, "last_detections", None) or []
+        face_count = len(faces)
+        st.write(
+            f"Live: **{ctx.video_processor.last_label}** ({ctx.video_processor.last_conf * 100:.2f}%)"
+            f" | Faces: {face_count}"
+        )
 
 
 def main() -> None:
     st.set_page_config(page_title=APP_TITLE, layout="wide")
     st.title(APP_TITLE)
-    st.caption("Predict hand gestures from image, multiple images, video, and live webcam.")
+    st.caption("Predict emotions and hand gestures from image, multiple images, and live webcam.")
 
+    if not st.session_state.get("started", False):
+        st.subheader("Welcome")
+        module = st.radio(
+            "Choose a module",
+            ["Emotion Detection", "Hand Gesture Recognition"],
+            index=0,
+        )
+        if st.button("Start", type="primary"):
+            st.session_state["module"] = module
+            st.session_state["started"] = True
+            st.rerun()
+        return
+
+    # Sidebar settings
     with st.sidebar:
         st.header("Settings")
         st.write("Run with:")
         st.code("pip install -r requirements.txt\nstreamlit run app.py")
-
-        st.session_state["use_vgg_preprocess"] = st.checkbox(
-            "Use VGG16 preprocess_input",
-            value=False,
-            help="Enable only if your trained model expects VGG16 preprocessing.",
-        )
 
         st.session_state["img_size"] = st.number_input(
             "Image size",
@@ -374,38 +792,49 @@ def main() -> None:
             step=16,
         )
 
-        started = st.session_state.get("started", False)
-        if st.button("Start", type="primary"):
-            st.session_state["started"] = True
-            started = True
-        if st.button("Stop"):
+        st.session_state["force_vgg_preprocess"] = st.checkbox(
+            "Use VGG16 preprocess_input (force)",
+            value=False,
+            help="If off, the app auto-detects preprocessing from the loaded model.",
+        )
+
+        if st.button("Back to start"):
             st.session_state["started"] = False
-            started = False
-        st.write(f"Status: {'Started' if started else 'Stopped'}")
+            st.rerun()
+
+    module = st.session_state.get("module", "Hand Gesture Recognition")
 
     try:
-        model = get_model()
-        class_names = get_labels()
+        if module == "Emotion Detection":
+            model = get_emotion_model()
+            class_names = EMOTION_LABELS
+        else:
+            model = get_model()
+            class_names = get_labels()
     except Exception as e:
         st.error(str(e))
         st.stop()
 
-    mode = st.selectbox("Choose mode", ["Single image", "Multiple images", "Video file", "Live webcam"])
+    force_vgg = bool(st.session_state.get("force_vgg_preprocess", False))
+    auto_vgg = detect_vgg_preprocess_from_model(model)
+    use_vgg_preprocess = force_vgg or auto_vgg
 
-    if not st.session_state.get("started", False):
-        st.info("Press **Start** in the sidebar to enable camera and prediction.")
-        return
-
-    use_vgg = bool(st.session_state.get("use_vgg_preprocess", False))
-
-    if mode == "Single image":
-        handle_single_image(model, class_names, use_vgg)
-    elif mode == "Multiple images":
-        handle_multiple_images(model, class_names, use_vgg)
-    elif mode == "Video file":
-        handle_video(model, class_names, use_vgg)
+    if module == "Emotion Detection":
+        input_mode = st.selectbox("Choose input", ["Single image capture", "Multiple image upload", "Live webcam"])
+        if input_mode == "Single image capture":
+            handle_emotion_single_image(model, use_vgg_preprocess=use_vgg_preprocess)
+        elif input_mode == "Multiple image upload":
+            handle_emotion_multiple_images(model, use_vgg_preprocess=use_vgg_preprocess)
+        else:
+            handle_emotion_live_webcam()
     else:
-        handle_live_webcam()
+        input_mode = st.selectbox("Choose input", ["Single image capture", "Multiple image upload", "Live webcam"])
+        if input_mode == "Single image capture":
+            handle_single_image(model, class_names, use_vgg_preprocess=use_vgg_preprocess)
+        elif input_mode == "Multiple image upload":
+            handle_multiple_images(model, class_names, use_vgg_preprocess=use_vgg_preprocess)
+        else:
+            handle_live_webcam()
 
 
 if __name__ == "__main__":

@@ -15,3 +15,11 @@ tensorflow-aarch64==2.16.1; python_version<'3.13' and (platform_machine=='aarch6
 numpy<2.0
 
 pillow>=9.5.0
+
+# MediaPipe powers multi-face and multi-hand detection.
+# If Streamlit runs Python 3.13, skip MediaPipe to avoid install failures.
+mediapipe>=0.10.0; python_version<'3.13'
+
+# Streamlit WebRTC powers live webcam streaming + overlays.
+# If Streamlit runs Python 3.13, skip to avoid install failures.
+streamlit-webrtc>=0.47.0; python_version<'3.13'
