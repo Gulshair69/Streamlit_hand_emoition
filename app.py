@@ -1,6 +1,7 @@
 import json
 import os
 import tempfile
+import re
 from collections import Counter
 from pathlib import Path
 from typing import Any, List, Optional, Tuple
@@ -45,17 +46,28 @@ APP_TITLE = "Hand Gesture Recognition"
 DEFAULT_MODEL_NAME = "best_hand_gesture_model.keras"
 DEFAULT_IMG_SIZE = 128
 FALLBACK_LABELS = [
-    "01_palm",
-    "02_l",
-    "03_fist",
-    "04_fist_moved",
-    "05_thumb",
-    "06_index",
-    "07_ok",
-    "08_palm_moved",
-    "09_c",
-    "10_down",
+    "palm",
+    "l",
+    "fist",
+    "fist_moved",
+    "thumb",
+    "index",
+    "ok",
+    "palm_moved",
+    "c",
+    "down",
 ]
+
+_LABEL_PREFIX_RE = re.compile(r"^\s*\d+_(.+?)\s*$")
+
+
+def format_label_for_display(label: str) -> str:
+    """
+    Convert numeric-prefixed labels like `01_palm` into folder-style labels like `palm`.
+    """
+    raw = str(label).strip()
+    match = _LABEL_PREFIX_RE.match(raw)
+    return match.group(1) if match else raw
 
 
 def _find_model_path() -> Optional[Path]:
@@ -176,7 +188,8 @@ def predict_image(
 
 
 def render_prediction_result(label: str, conf: float) -> None:
-    st.success(f"Prediction: {label}")
+    display_label = format_label_for_display(label)
+    st.success(f"Prediction: {display_label}")
     st.write(f"Confidence: **{conf * 100:.2f}%**")
 
 
@@ -208,9 +221,10 @@ def handle_multiple_images(model: Any, class_names: List[str], use_vgg_preproces
         image = Image.open(uploaded).convert("RGB")
         img_rgb = np.array(image)
         label, conf, _ = predict_image(img_rgb, model, class_names, use_vgg_preprocess=use_vgg_preprocess)
+        display_label = format_label_for_display(label)
         with cols[i % 3]:
             st.image(img_rgb, caption=uploaded.name, use_container_width=True)
-            st.write(f"**{label}**")
+            st.write(f"**{display_label}**")
             st.caption(f"{conf * 100:.2f}%")
 
 
@@ -256,8 +270,9 @@ def handle_video(model: Any, class_names: List[str], use_vgg_preprocess: bool) -
                     class_names,
                     use_vgg_preprocess=use_vgg_preprocess,
                 )
-                rows.append({"frame": frame_id, "label": label, "confidence": round(conf * 100, 2)})
-                labels_counter[label] += 1
+                display_label = format_label_for_display(label)
+                rows.append({"frame": frame_id, "label": display_label, "confidence": round(conf * 100, 2)})
+                labels_counter[display_label] += 1
                 sampled += 1
                 if sampled >= max_samples:
                     break
@@ -294,9 +309,9 @@ class GestureVideoProcessor(VideoProcessorBase):
             self.class_names,
             use_vgg_preprocess=self.use_vgg_preprocess,
         )
-        self.last_label = label
+        self.last_label = format_label_for_display(label)
         self.last_conf = conf
-        text = f"{label} ({conf * 100:.1f}%)"
+        text = f"{self.last_label} ({conf * 100:.1f}%)"
         if CV2_AVAILABLE:
             cv2.putText(img, text, (12, 36), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)  # type: ignore[union-attr]
         return frame.from_ndarray(img, format="bgr24")
