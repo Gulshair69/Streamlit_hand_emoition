@@ -3,7 +3,7 @@ import os
 import tempfile
 from collections import Counter
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Any, List, Optional, Tuple
 
 # OpenCV is optional on Streamlit Community Cloud sometimes (wheel/build issues).
 # We fall back to PIL/numpy for image preprocessing, and we disable video mode
@@ -17,10 +17,19 @@ except Exception:
     CV2_AVAILABLE = False
 import numpy as np
 import streamlit as st
-import tensorflow as tf
 from PIL import Image
-from tensorflow.keras.applications.vgg16 import preprocess_input as vgg16_preprocess_input
-from tensorflow.keras.models import load_model
+
+# TensorFlow may not be available on the Streamlit runtime (e.g. Python 3.13
+# without TF wheels). We treat it as an optional dependency and show a clear
+# runtime error if it's missing.
+try:
+    import tensorflow as tf  # type: ignore
+    from tensorflow.keras.applications.vgg16 import preprocess_input as vgg16_preprocess_input  # type: ignore
+    from tensorflow.keras.models import load_model  # type: ignore
+except Exception:
+    tf = None  # type: ignore
+    vgg16_preprocess_input = None  # type: ignore
+    load_model = None  # type: ignore
 
 try:
     from streamlit_webrtc import VideoProcessorBase, webrtc_streamer
@@ -105,7 +114,13 @@ def _load_labels() -> List[str]:
 
 
 @st.cache_resource
-def get_model() -> tf.keras.Model:
+def get_model() -> Any:
+    if tf is None or load_model is None:
+        raise ImportError(
+            "TensorFlow is not available in this Streamlit environment. "
+            "Switch Streamlit's Python runtime to <= 3.12 and redeploy, "
+            "or install TensorFlow."
+        )
     model_path = _find_model_path()
     if model_path is None:
         raise FileNotFoundError(
@@ -132,7 +147,9 @@ def preprocess_image(
     arr = resized.astype(np.float32)
     arr = np.expand_dims(arr, axis=0)
     if use_vgg_preprocess:
-        arr = vgg16_preprocess_input(arr)
+        if vgg16_preprocess_input is None:
+            raise ImportError("VGG16 preprocess_input requires TensorFlow.")
+        arr = vgg16_preprocess_input(arr)  # type: ignore[misc]
     else:
         arr = arr / 255.0
     return arr
@@ -144,7 +161,7 @@ def get_img_size() -> int:
 
 def predict_image(
     img_rgb: np.ndarray,
-    model: tf.keras.Model,
+    model: Any,
     class_names: List[str],
     img_size: Optional[int] = None,
     use_vgg_preprocess: bool = False,
@@ -163,7 +180,7 @@ def render_prediction_result(label: str, conf: float) -> None:
     st.write(f"Confidence: **{conf * 100:.2f}%**")
 
 
-def handle_single_image(model: tf.keras.Model, class_names: List[str], use_vgg_preprocess: bool) -> None:
+def handle_single_image(model: Any, class_names: List[str], use_vgg_preprocess: bool) -> None:
     uploaded = st.file_uploader("Upload one image", type=["png", "jpg", "jpeg", "bmp"], key="single_uploader")
     if uploaded is None:
         return
@@ -175,7 +192,7 @@ def handle_single_image(model: tf.keras.Model, class_names: List[str], use_vgg_p
     render_prediction_result(label, conf)
 
 
-def handle_multiple_images(model: tf.keras.Model, class_names: List[str], use_vgg_preprocess: bool) -> None:
+def handle_multiple_images(model: Any, class_names: List[str], use_vgg_preprocess: bool) -> None:
     files = st.file_uploader(
         "Upload multiple images",
         type=["png", "jpg", "jpeg", "bmp"],
@@ -197,7 +214,7 @@ def handle_multiple_images(model: tf.keras.Model, class_names: List[str], use_vg
             st.caption(f"{conf * 100:.2f}%")
 
 
-def handle_video(model: tf.keras.Model, class_names: List[str], use_vgg_preprocess: bool) -> None:
+def handle_video(model: Any, class_names: List[str], use_vgg_preprocess: bool) -> None:
     uploaded = st.file_uploader("Upload video", type=["mp4", "avi", "mov"], key="video_uploader")
     if uploaded is None:
         return
