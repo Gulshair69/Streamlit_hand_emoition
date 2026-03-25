@@ -5,7 +5,16 @@ from collections import Counter
 from pathlib import Path
 from typing import List, Optional, Tuple
 
-import cv2
+# OpenCV is optional on Streamlit Community Cloud sometimes (wheel/build issues).
+# We fall back to PIL/numpy for image preprocessing, and we disable video mode
+# if OpenCV isn't available.
+try:
+    import cv2  # type: ignore
+
+    CV2_AVAILABLE = True
+except Exception:
+    cv2 = None  # type: ignore
+    CV2_AVAILABLE = False
 import numpy as np
 import streamlit as st
 import tensorflow as tf
@@ -115,7 +124,11 @@ def preprocess_image(
     img_size: int = DEFAULT_IMG_SIZE,
     use_vgg_preprocess: bool = False,
 ) -> np.ndarray:
-    resized = cv2.resize(img_rgb, (img_size, img_size))
+    if CV2_AVAILABLE:
+        resized = cv2.resize(img_rgb, (img_size, img_size))  # type: ignore[union-attr]
+    else:
+        # PIL resize fallback (keeps the app runnable without OpenCV).
+        resized = np.array(Image.fromarray(img_rgb).resize((img_size, img_size)))
     arr = resized.astype(np.float32)
     arr = np.expand_dims(arr, axis=0)
     if use_vgg_preprocess:
@@ -189,6 +202,10 @@ def handle_video(model: tf.keras.Model, class_names: List[str], use_vgg_preproce
     if uploaded is None:
         return
 
+    if not CV2_AVAILABLE:
+        st.error("Video mode requires `opencv-python-headless`. Install it or switch to image mode.")
+        return
+
     sample_every_n = st.slider("Sample every N frames", min_value=5, max_value=60, value=15, step=1)
     max_samples = st.slider("Max sampled frames", min_value=10, max_value=300, value=80, step=10)
 
@@ -249,7 +266,11 @@ class GestureVideoProcessor(VideoProcessorBase):
 
     def recv(self, frame):
         img = frame.to_ndarray(format="bgr24")
-        rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        if CV2_AVAILABLE:
+            rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)  # type: ignore[union-attr]
+        else:
+            # BGR -> RGB without OpenCV.
+            rgb = img[..., ::-1]
         label, conf, _ = predict_image(
             rgb,
             self.model,
@@ -259,7 +280,8 @@ class GestureVideoProcessor(VideoProcessorBase):
         self.last_label = label
         self.last_conf = conf
         text = f"{label} ({conf * 100:.1f}%)"
-        cv2.putText(img, text, (12, 36), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+        if CV2_AVAILABLE:
+            cv2.putText(img, text, (12, 36), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)  # type: ignore[union-attr]
         return frame.from_ndarray(img, format="bgr24")
 
 

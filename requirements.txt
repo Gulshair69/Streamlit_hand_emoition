@@ -4,8 +4,8 @@ streamlit>=1.36.0
 tensorflow==2.15.1; python_version<'3.12'
 tensorflow==2.16.1; python_version>='3.12'
 
-# Use headless OpenCV to avoid GUI/system-library dependency issues on Linux.
-opencv-python-headless>=4.8.0.74
+# OpenCV is optional (image mode works without it). Video mode will
+# show an error if OpenCV isn't installed.
 
 # Keep NumPy below 2.0 to avoid incompatibilities with TF 2.15/2.16.
 numpy<2.0
