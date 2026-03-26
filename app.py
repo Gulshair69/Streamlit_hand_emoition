@@ -1,3 +1,4 @@
+import io
 import json
 import os
 import tempfile
@@ -33,16 +34,6 @@ except Exception:
     load_model = None  # type: ignore
 
 try:
-    from streamlit_webrtc import VideoProcessorBase, webrtc_streamer
-
-    WEBRTC_AVAILABLE = True
-except Exception:
-    WEBRTC_AVAILABLE = False
-    VideoProcessorBase = object  # type: ignore
-    webrtc_streamer = None  # type: ignore
-
-
-try:
     import mediapipe as mp  # type: ignore
 
     MP_AVAILABLE = True
@@ -76,6 +67,133 @@ FALLBACK_LABELS = [
     "09_c",
     "10_down",
 ]
+
+
+def _inject_professional_theme(*, hide_sidebar: bool = False) -> None:
+    """
+    Streamlit-native UI polish: typography, spacing, primary actions, cards.
+    hide_sidebar: use on the landing screen so an empty sidebar is not shown.
+    """
+    sidebar_rule = (
+        "section[data-testid='stSidebar'] { display: none !important; }"
+        " div[data-testid='collapsedControl'] { display: none !important; }"
+        if hide_sidebar
+        else ""
+    )
+    st.markdown(
+        f"""
+        <style>
+        {sidebar_rule}
+        @import url('https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&display=swap');
+        html, body, [class*="css"] {{
+            font-family: "DM Sans", "Segoe UI", system-ui, -apple-system, sans-serif;
+        }}
+        .stApp {{
+            background: linear-gradient(165deg, #f8fafc 0%, #eef2f7 42%, #f1f5f9 100%);
+        }}
+        .main .block-container {{
+            padding-top: 1.75rem;
+            padding-bottom: 3rem;
+            max-width: 1100px;
+        }}
+        h1 {{
+            font-weight: 700 !important;
+            letter-spacing: -0.03em;
+            color: #0f172a !important;
+            font-size: 2rem !important;
+            line-height: 1.2 !important;
+            border-bottom: 1px solid #e2e8f0;
+            padding-bottom: 0.65rem;
+            margin-bottom: 0.35rem !important;
+        }}
+        h2, h3 {{
+            color: #1e293b !important;
+            font-weight: 600 !important;
+            letter-spacing: -0.02em;
+        }}
+        [data-testid="stCaptionContainer"] {{
+            color: #64748b !important;
+            font-size: 1rem !important;
+        }}
+        div[data-testid="stRadio"] label {{
+            font-weight: 500;
+            color: #334155;
+        }}
+        div[data-testid="stButton"] > button[kind="primary"] {{
+            background: linear-gradient(135deg, #1d4ed8 0%, #2563eb 55%, #3b82f6 100%) !important;
+            border: none !important;
+            color: #ffffff !important;
+            font-weight: 600 !important;
+            padding: 0.55rem 1.65rem !important;
+            border-radius: 10px !important;
+            box-shadow: 0 4px 14px rgba(37, 99, 235, 0.28);
+            transition: transform 0.15s ease, box-shadow 0.15s ease;
+        }}
+        div[data-testid="stButton"] > button[kind="primary"]:hover {{
+            box-shadow: 0 6px 20px rgba(37, 99, 235, 0.35);
+        }}
+        div[data-testid="stButton"] > button[kind="secondary"] {{
+            border-radius: 10px !important;
+            font-weight: 500 !important;
+            border-color: #cbd5e1 !important;
+            color: #475569 !important;
+        }}
+        div[data-testid="stSelectbox"] label,
+        div[data-testid="stSlider"] label,
+        div[data-testid="stNumberInput"] label,
+        div[data-testid="stCheckbox"] label {{
+            font-weight: 600;
+            color: #334155;
+            font-size: 0.9rem;
+        }}
+        [data-baseweb="select"] > div {{
+            border-radius: 8px !important;
+        }}
+        .welcome-card {{
+            background: #ffffff;
+            border: 1px solid #e2e8f0;
+            border-radius: 16px;
+            padding: 1.5rem 1.75rem;
+            margin: 1.25rem 0 1.5rem 0;
+            box-shadow: 0 1px 3px rgba(15, 23, 42, 0.06);
+        }}
+        .welcome-pill {{
+            display: inline-block;
+            background: #eff6ff;
+            color: #1d4ed8;
+            font-size: 0.75rem;
+            font-weight: 600;
+            letter-spacing: 0.04em;
+            text-transform: uppercase;
+            padding: 0.35rem 0.65rem;
+            border-radius: 999px;
+            margin-bottom: 0.75rem;
+        }}
+        .module-badge {{
+            display: inline-flex;
+            align-items: center;
+            gap: 0.35rem;
+            background: #f1f5f9;
+            color: #475569;
+            font-size: 0.875rem;
+            font-weight: 500;
+            padding: 0.4rem 0.85rem;
+            border-radius: 8px;
+            border: 1px solid #e2e8f0;
+            margin: 0 0 1rem 0;
+        }}
+        section[data-testid="stSidebar"] {{
+            background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
+            border-right: 1px solid #e2e8f0;
+        }}
+        section[data-testid="stSidebar"] .block-container {{
+            padding-top: 1.5rem;
+        }}
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
 
 _LABEL_PREFIX_RE = re.compile(r"^\s*\d+_(.+?)\s*$")
 
@@ -284,18 +402,6 @@ def get_hands_detector_static() -> Any:
     )
 
 
-@st.cache_resource
-def get_hands_detector_stream() -> Any:
-    if not MP_AVAILABLE or mp is None:
-        raise ImportError("MediaPipe is not installed. Multi-person Hand detection requires MediaPipe.")
-    return mp.solutions.hands.Hands(
-        static_image_mode=False,
-        max_num_hands=4,
-        min_detection_confidence=0.5,
-        min_tracking_confidence=0.5,
-    )
-
-
 def detect_faces(img_rgb: np.ndarray, pad_ratio: float = 0.25, max_faces: int = 6) -> List[Tuple[int, int, int, int]]:
     if not MP_AVAILABLE:
         return []
@@ -318,25 +424,6 @@ def detect_hands(img_rgb: np.ndarray, pad_ratio: float = 0.25, max_hands: int = 
     if not MP_AVAILABLE:
         return []
     detector = get_hands_detector_static()
-    h, w = img_rgb.shape[:2]
-    results = detector.process(img_rgb)
-    bboxes: List[Tuple[int, int, int, int]] = []
-    landmarks_list = getattr(results, "multi_hand_landmarks", None) or []
-    for hand_landmarks in landmarks_list[:max_hands]:
-        xs = [lm.x for lm in hand_landmarks.landmark]
-        ys = [lm.y for lm in hand_landmarks.landmark]
-        x1 = int(min(xs) * w)
-        y1 = int(min(ys) * h)
-        x2 = int(max(xs) * w)
-        y2 = int(max(ys) * h)
-        bboxes.append(_pad_bbox(x1, y1, x2, y2, pad_ratio, w, h))
-    return bboxes
-
-
-def detect_hands_stream(img_rgb: np.ndarray, pad_ratio: float = 0.25, max_hands: int = 4) -> List[Tuple[int, int, int, int]]:
-    if not MP_AVAILABLE:
-        return []
-    detector = get_hands_detector_stream()
     h, w = img_rgb.shape[:2]
     results = detector.process(img_rgb)
     bboxes: List[Tuple[int, int, int, int]] = []
@@ -445,24 +532,23 @@ def handle_single_image(model: Any, class_names: List[str], use_vgg_preprocess: 
 
 
 def handle_multiple_images(model: Any, class_names: List[str], use_vgg_preprocess: bool) -> None:
-    files = st.file_uploader(
-        "Upload multiple images",
-        type=["png", "jpg", "jpeg", "bmp"],
-        accept_multiple_files=True,
-        key="multi_uploader",
+    items = _collect_multi_rgb_images(
+        uploader_key="multi_uploader",
+        session_capture_key="hand_multi_captures",
+        camera_widget_key="hand_multi_cam",
+        upload_prompt="Upload one or more images (hand gestures)",
     )
-    if not files:
+    if not items:
+        st.info("Choose **Capture multiple from camera** or **Upload files**, then add at least one image.")
         return
 
     st.subheader("Results")
     cols = st.columns(3)
-    for i, uploaded in enumerate(files):
-        image = Image.open(uploaded).convert("RGB")
-        img_rgb = np.array(image)
+    for i, (name, img_rgb) in enumerate(items):
         detections = predict_hand_multi(img_rgb, model, class_names, use_vgg_preprocess=use_vgg_preprocess)
         annotated = annotate_image(img_rgb, detections, color=(0, 200, 0))
         with cols[i % 3]:
-            st.image(annotated, caption=uploaded.name, use_container_width=True)
+            st.image(annotated, caption=name, use_container_width=True)
             if detections:
                 best = max(detections, key=lambda d: float(d.get("confidence", 0.0)))
                 st.write(f"**{best['label']}**")
@@ -531,168 +617,6 @@ def handle_video(model: Any, class_names: List[str], use_vgg_preprocess: bool) -
     st.dataframe(rows, use_container_width=True)
 
 
-def predict_hand_multi_stream(
-    img_rgb: np.ndarray,
-    model: Any,
-    class_names: List[str],
-    use_vgg_preprocess: bool,
-) -> List[dict]:
-    bboxes = detect_hands_stream(img_rgb)
-    if not bboxes:
-        bboxes = [(0, 0, img_rgb.shape[1], img_rgb.shape[0])]
-
-    detections: List[dict] = []
-    for (x1, y1, x2, y2) in bboxes:
-        crop = img_rgb[y1:y2, x1:x2]
-        label, conf, _ = predict_image(crop, model, class_names, use_vgg_preprocess=use_vgg_preprocess)
-        detections.append(
-            {
-                "bbox": (x1, y1, x2, y2),
-                "label": format_label_for_display(label),
-                "confidence": conf,
-            }
-        )
-    return detections
-
-
-class HandVideoProcessor(VideoProcessorBase):
-    def __init__(self, sample_every_n: int = 15) -> None:
-        self.sample_every_n = max(1, int(sample_every_n))
-        self.frame_idx = 0
-        self.last_annotated_bgr: Optional[np.ndarray] = None
-        self.last_detections: List[dict] = []
-        self.last_label = ""
-        self.last_conf = 0.0
-        self.error_msg: Optional[str] = None
-
-        try:
-            self.model = get_model()
-            self.class_names = get_labels()
-            force_vgg = bool(st.session_state.get("force_vgg_preprocess", False))
-            auto_vgg = detect_vgg_preprocess_from_model(self.model)
-            self.use_vgg_preprocess = force_vgg or auto_vgg
-        except Exception as e:
-            self.error_msg = str(e)
-            self.model = None
-            self.class_names = []
-            self.use_vgg_preprocess = False
-
-    def recv(self, frame):
-        img_bgr = frame.to_ndarray(format="bgr24")
-        self.frame_idx += 1
-
-        if self.error_msg is not None:
-            # Can't run inference: return original frame.
-            return frame.from_ndarray(img_bgr, format="bgr24")
-
-        if self.last_annotated_bgr is not None and (self.frame_idx % self.sample_every_n) != 0:
-            return frame.from_ndarray(self.last_annotated_bgr, format="bgr24")
-
-        img_rgb = img_bgr[..., ::-1]
-        detections = predict_hand_multi_stream(
-            img_rgb,
-            self.model,
-            self.class_names,
-            use_vgg_preprocess=self.use_vgg_preprocess,
-        )
-        annotated_rgb = annotate_image(img_rgb, detections, color=(0, 200, 0))
-        annotated_bgr = annotated_rgb[..., ::-1]
-
-        self.last_detections = detections
-        if detections:
-            best = max(detections, key=lambda d: float(d.get("confidence", 0.0)))
-            self.last_label = best.get("label", "")
-            self.last_conf = float(best.get("confidence", 0.0))
-
-        self.last_annotated_bgr = annotated_bgr
-        return frame.from_ndarray(annotated_bgr, format="bgr24")
-
-
-class EmotionVideoProcessor(VideoProcessorBase):
-    def __init__(self, sample_every_n: int = 15) -> None:
-        self.sample_every_n = max(1, int(sample_every_n))
-        self.frame_idx = 0
-        self.last_annotated_bgr: Optional[np.ndarray] = None
-        self.last_detections: List[dict] = []
-        self.last_label = ""
-        self.last_conf = 0.0
-        self.error_msg: Optional[str] = None
-
-        try:
-            self.model = get_emotion_model()
-            force_vgg = bool(st.session_state.get("force_vgg_preprocess", False))
-            auto_vgg = detect_vgg_preprocess_from_model(self.model)
-            self.use_vgg_preprocess = force_vgg or auto_vgg
-        except Exception as e:
-            self.error_msg = str(e)
-            self.model = None
-            self.use_vgg_preprocess = False
-
-    def recv(self, frame):
-        img_bgr = frame.to_ndarray(format="bgr24")
-        self.frame_idx += 1
-
-        if self.error_msg is not None or self.model is None:
-            return frame.from_ndarray(img_bgr, format="bgr24")
-
-        if self.last_annotated_bgr is not None and (self.frame_idx % self.sample_every_n) != 0:
-            return frame.from_ndarray(self.last_annotated_bgr, format="bgr24")
-
-        img_rgb = img_bgr[..., ::-1]
-        detections = predict_emotion_multi(img_rgb, self.model, use_vgg_preprocess=self.use_vgg_preprocess)
-        annotated_rgb = annotate_image(img_rgb, detections, color=(200, 0, 0))
-        annotated_bgr = annotated_rgb[..., ::-1]
-
-        self.last_detections = detections
-        if detections:
-            best = max(detections, key=lambda d: float(d.get("confidence", 0.0)))
-            self.last_label = best.get("label", "")
-            self.last_conf = float(best.get("confidence", 0.0))
-
-        self.last_annotated_bgr = annotated_bgr
-        return frame.from_ndarray(annotated_bgr, format="bgr24")
-
-
-def handle_live_webcam() -> None:
-    if not WEBRTC_AVAILABLE:
-        st.warning(
-            "Live webcam needs `streamlit-webrtc`. Install dependencies from requirements.txt and restart."
-        )
-        st.info("You can still use snapshot mode below.")
-
-    st.subheader("Live Webcam")
-    if WEBRTC_AVAILABLE:
-        sample_every_n = st.slider("Run inference every N frames", min_value=1, max_value=30, value=5, step=1)
-        ctx = webrtc_streamer(
-            key="hand-live",
-            video_processor_factory=lambda: HandVideoProcessor(sample_every_n=sample_every_n),
-            media_stream_constraints={"video": True, "audio": False},
-            async_processing=True,
-        )
-        if ctx and ctx.video_processor:
-            st.write(
-                f"Live: **{ctx.video_processor.last_label}** ({ctx.video_processor.last_conf * 100:.2f}%)"
-            )
-
-    st.subheader("Snapshot")
-    snapshot = st.camera_input("Take a single photo")
-    if snapshot is not None:
-        image = Image.open(snapshot).convert("RGB")
-        img_rgb = np.array(image)
-        st.image(img_rgb, caption="Captured snapshot", use_container_width=True)
-        model = get_model()
-        labels = get_labels()
-        force_vgg = bool(st.session_state.get("force_vgg_preprocess", False))
-        auto_vgg = detect_vgg_preprocess_from_model(model)
-        use_vgg = force_vgg or auto_vgg
-        detections = predict_hand_multi(img_rgb, model, labels, use_vgg_preprocess=use_vgg)
-        annotated = annotate_image(img_rgb, detections, color=(0, 200, 0))
-        st.image(annotated, caption="Hand detection result", use_container_width=True)
-        st.write(f"Hands detected: {len(detections)}")
-        for i, det in enumerate(detections, start=1):
-            st.write(f"{i}. **{det['label']}** - {det['confidence'] * 100:.2f}%")
-
-
 def handle_emotion_single_image(model: Any, use_vgg_preprocess: bool) -> None:
     snapshot = st.camera_input("Capture one image (webcam) for emotion detection")
     if snapshot is None:
@@ -710,24 +634,23 @@ def handle_emotion_single_image(model: Any, use_vgg_preprocess: bool) -> None:
 
 
 def handle_emotion_multiple_images(model: Any, use_vgg_preprocess: bool) -> None:
-    files = st.file_uploader(
-        "Upload multiple images for emotion detection",
-        type=["png", "jpg", "jpeg", "bmp"],
-        accept_multiple_files=True,
-        key="emotion_multi_uploader",
+    items = _collect_multi_rgb_images(
+        uploader_key="emotion_multi_uploader",
+        session_capture_key="emotion_multi_captures",
+        camera_widget_key="emotion_multi_cam",
+        upload_prompt="Upload one or more images (emotion)",
     )
-    if not files:
+    if not items:
+        st.info("Choose **Capture multiple from camera** or **Upload files**, then add at least one image.")
         return
 
     st.subheader("Emotion results")
     cols = st.columns(3)
-    for i, uploaded in enumerate(files):
-        image = Image.open(uploaded).convert("RGB")
-        img_rgb = np.array(image)
+    for i, (name, img_rgb) in enumerate(items):
         detections = predict_emotion_multi(img_rgb, model, use_vgg_preprocess=use_vgg_preprocess)
         annotated = annotate_image(img_rgb, detections, color=(200, 0, 0))
         with cols[i % 3]:
-            st.image(annotated, caption=uploaded.name, use_container_width=True)
+            st.image(annotated, caption=name, use_container_width=True)
             if detections:
                 best = max(detections, key=lambda d: float(d.get("confidence", 0.0)))
                 st.write(f"**{best['label']}**")
@@ -736,73 +659,150 @@ def handle_emotion_multiple_images(model: Any, use_vgg_preprocess: bool) -> None
                 st.caption("No faces detected")
 
 
-def handle_emotion_live_webcam() -> None:
-    if not WEBRTC_AVAILABLE:
-        st.warning(
-            "Live webcam needs `streamlit-webrtc`. Install dependencies from requirements.txt and restart."
-        )
-        return
-
-    st.subheader("Live Webcam (Emotion)")
-    sample_every_n = st.slider("Run inference every N frames", min_value=1, max_value=30, value=5, step=1)
-    ctx = webrtc_streamer(
-        key="emotion-live",
-        video_processor_factory=lambda: EmotionVideoProcessor(sample_every_n=sample_every_n),
-        media_stream_constraints={"video": True, "audio": False},
-        async_processing=True,
+def _collect_multi_rgb_images(
+    *,
+    uploader_key: str,
+    session_capture_key: str,
+    camera_widget_key: str,
+    upload_prompt: str,
+) -> List[Tuple[str, np.ndarray]]:
+    """
+    For batch mode: either upload multiple files, or capture several photos from the webcam
+    (stored in session_state) and return (display_name, RGB array) pairs.
+    """
+    mode = st.radio(
+        "Add images",
+        ["Capture multiple from camera", "Upload files"],
+        key=f"{uploader_key}_mode",
+        horizontal=False,
+        help="Camera: take a picture, then add it to your batch. Upload: select several files at once.",
     )
-    if ctx and ctx.video_processor:
-        faces = getattr(ctx.video_processor, "last_detections", None) or []
-        face_count = len(faces)
-        st.write(
-            f"Live: **{ctx.video_processor.last_label}** ({ctx.video_processor.last_conf * 100:.2f}%)"
-            f" | Faces: {face_count}"
+
+    if mode == "Upload files":
+        files = st.file_uploader(
+            upload_prompt,
+            type=["png", "jpg", "jpeg", "bmp"],
+            accept_multiple_files=True,
+            key=uploader_key,
         )
+        if not files:
+            return []
+        out: List[Tuple[str, np.ndarray]] = []
+        for uf in files:
+            out.append((uf.name, np.array(Image.open(uf).convert("RGB"))))
+        return out
+
+    if session_capture_key not in st.session_state:
+        st.session_state[session_capture_key] = []
+
+    st.caption(
+        "Take a photo below, then click **Add current photo to batch**. "
+        "Repeat to collect multiple images. Use **Clear batch** to start over."
+    )
+    snapshot = st.camera_input("Camera", key=camera_widget_key)
+    bc1, bc2 = st.columns(2)
+    with bc1:
+        if st.button("Add current photo to batch", key=f"{uploader_key}_add"):
+            if snapshot is None:
+                st.warning("Capture a photo first, then add it to the batch.")
+            else:
+                n = len(st.session_state[session_capture_key]) + 1
+                st.session_state[session_capture_key].append(
+                    {"bytes": snapshot.getvalue(), "name": f"Capture_{n}"}
+                )
+                st.success(f"Added photo {n} ({len(st.session_state[session_capture_key])} in batch).")
+    with bc2:
+        if st.button("Clear batch", key=f"{uploader_key}_clear"):
+            st.session_state[session_capture_key] = []
+            st.rerun()
+
+    out_cam: List[Tuple[str, np.ndarray]] = []
+    for block in st.session_state[session_capture_key]:
+        img = Image.open(io.BytesIO(block["bytes"])).convert("RGB")
+        out_cam.append((block["name"], np.array(img)))
+    return out_cam
 
 
 def main() -> None:
-    st.set_page_config(page_title=APP_TITLE, layout="wide")
-    st.title(APP_TITLE)
-    st.caption("Predict emotions and hand gestures from image, multiple images, and live webcam.")
+    started = bool(st.session_state.get("started", False))
+    st.set_page_config(
+        page_title=APP_TITLE,
+        page_icon="🎯",
+        layout="wide",
+        initial_sidebar_state="collapsed" if not started else "expanded",
+    )
+    _inject_professional_theme(hide_sidebar=not started)
 
-    if not st.session_state.get("started", False):
-        st.subheader("Welcome")
+    st.title(APP_TITLE)
+    st.caption(
+        "Classify **facial expressions** and **hand gestures** from single or **multiple** images "
+        "(upload files or capture several photos from the camera), with optional face and hand localization."
+    )
+
+    if not started:
+        st.markdown(
+            """
+            <div class="welcome-card">
+            <div class="welcome-pill">Machine learning · Computer vision</div>
+            <p style="margin:0; color:#334155; font-size:1.05rem; line-height:1.6;">
+            Choose a module to load the corresponding trained model. Inference runs in your session;
+            use the sidebar after launch to tune input size and preprocessing for your checkpoint.
+            </p>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        st.markdown("##### Get started")
         module = st.radio(
-            "Choose a module",
+            "Select capability",
             ["Emotion Detection", "Hand Gesture Recognition"],
             index=0,
+            horizontal=False,
+            help="Emotion uses MediaPipe face regions when available; gestures use hand landmarks.",
         )
-        if st.button("Start", type="primary"):
-            st.session_state["module"] = module
-            st.session_state["started"] = True
-            st.rerun()
+        c1, c2 = st.columns([1, 3])
+        with c1:
+            if st.button("Continue", type="primary", use_container_width=True):
+                st.session_state["module"] = module
+                st.session_state["started"] = True
+                st.rerun()
+        with c2:
+            st.caption("You can return to this screen anytime from **Settings → Back to home**.")
         return
+
+    module = st.session_state.get("module", "Hand Gesture Recognition")
+    emoji = "😊" if module == "Emotion Detection" else "✋"
+    st.markdown(
+        f'<div class="module-badge">{emoji} Active: {module}</div>',
+        unsafe_allow_html=True,
+    )
 
     # Sidebar settings
     with st.sidebar:
-        st.header("Settings")
-        st.write("Run with:")
-        st.code("pip install -r requirements.txt\nstreamlit run app.py")
+        st.markdown("### Settings")
+        st.caption("Inference and environment")
+        st.divider()
+        with st.expander("How to run locally", expanded=False):
+            st.code("pip install -r requirements.txt\nstreamlit run app.py", language="bash")
 
         st.session_state["img_size"] = st.number_input(
-            "Image size",
+            "Input image size (px)",
             min_value=64,
             max_value=512,
             value=DEFAULT_IMG_SIZE,
             step=16,
+            help="Resize dimension for model input (square). Match training size when possible.",
         )
 
         st.session_state["force_vgg_preprocess"] = st.checkbox(
-            "Use VGG16 preprocess_input (force)",
+            "Force VGG16 preprocess_input",
             value=False,
-            help="If off, the app auto-detects preprocessing from the loaded model.",
+            help="If disabled, preprocessing matches the loaded model (auto-detected from layer names).",
         )
-
-        if st.button("Back to start"):
+        st.divider()
+        if st.button("Back to home", use_container_width=True):
             st.session_state["started"] = False
             st.rerun()
-
-    module = st.session_state.get("module", "Hand Gesture Recognition")
 
     try:
         if module == "Emotion Detection":
@@ -820,21 +820,25 @@ def main() -> None:
     use_vgg_preprocess = force_vgg or auto_vgg
 
     if module == "Emotion Detection":
-        input_mode = st.selectbox("Choose input", ["Single image capture", "Multiple image upload", "Live webcam"])
+        input_mode = st.selectbox(
+            "Input source",
+            ["Single image capture", "Multiple images"],
+            help="Single: one camera shot. Multiple: upload several files or add several webcam captures to a batch.",
+        )
         if input_mode == "Single image capture":
             handle_emotion_single_image(model, use_vgg_preprocess=use_vgg_preprocess)
-        elif input_mode == "Multiple image upload":
-            handle_emotion_multiple_images(model, use_vgg_preprocess=use_vgg_preprocess)
         else:
-            handle_emotion_live_webcam()
+            handle_emotion_multiple_images(model, use_vgg_preprocess=use_vgg_preprocess)
     else:
-        input_mode = st.selectbox("Choose input", ["Single image capture", "Multiple image upload", "Live webcam"])
+        input_mode = st.selectbox(
+            "Input source",
+            ["Single image capture", "Multiple images"],
+            help="Single: one camera shot. Multiple: upload several files or add several webcam captures to a batch.",
+        )
         if input_mode == "Single image capture":
             handle_single_image(model, class_names, use_vgg_preprocess=use_vgg_preprocess)
-        elif input_mode == "Multiple image upload":
-            handle_multiple_images(model, class_names, use_vgg_preprocess=use_vgg_preprocess)
         else:
-            handle_live_webcam()
+            handle_multiple_images(model, class_names, use_vgg_preprocess=use_vgg_preprocess)
 
 
 if __name__ == "__main__":
