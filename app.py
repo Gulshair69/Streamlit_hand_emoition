@@ -182,6 +182,41 @@ def _inject_professional_theme(*, hide_sidebar: bool = False) -> None:
             border: 1px solid #e2e8f0;
             margin: 0 0 1rem 0;
         }}
+        .result-card {{
+            background: #ffffff;
+            border: 1px solid #dbe3ef;
+            border-radius: 12px;
+            padding: 0.65rem 0.8rem;
+            margin-top: 0.45rem;
+            box-shadow: 0 1px 2px rgba(15, 23, 42, 0.06);
+        }}
+        .result-kpi {{
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 0.5rem;
+            font-size: 0.9rem;
+            color: #334155;
+            margin-bottom: 0.3rem;
+        }}
+        .result-label {{
+            font-weight: 700;
+            color: #0f172a;
+        }}
+        .result-pill {{
+            background: #eef2ff;
+            color: #3730a3;
+            border: 1px solid #c7d2fe;
+            border-radius: 999px;
+            font-size: 0.78rem;
+            font-weight: 600;
+            padding: 0.1rem 0.5rem;
+            white-space: nowrap;
+        }}
+        .result-muted {{
+            color: #64748b;
+            font-size: 0.84rem;
+        }}
         section[data-testid="stSidebar"] {{
             background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
             border-right: 1px solid #e2e8f0;
@@ -514,6 +549,40 @@ def render_prediction_result(label: str, conf: float) -> None:
     st.write(f"Confidence: **{conf * 100:.2f}%**")
 
 
+def render_result_card(
+    *,
+    title: str,
+    label: str,
+    confidence: float,
+    count_text: str,
+    status_text: str,
+) -> None:
+    safe_label = format_label_for_display(label)
+    st.markdown(
+        (
+            "<div class='result-card'>"
+            f"<div class='result-kpi'><span class='result-label'>{title}</span>"
+            f"<span class='result-pill'>{confidence * 100:.2f}%</span></div>"
+            f"<div class='result-kpi'><span>Top class</span><span><b>{safe_label}</b></span></div>"
+            f"<div class='result-kpi'><span>{count_text}</span><span>{status_text}</span></div>"
+            "</div>"
+        ),
+        unsafe_allow_html=True,
+    )
+
+
+def render_batch_overview(detections_per_image: List[int], entity_name: str) -> None:
+    total_images = len(detections_per_image)
+    if total_images == 0:
+        return
+    total_entities = int(sum(detections_per_image))
+    avg_entities = total_entities / total_images
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Images processed", total_images)
+    c2.metric(f"Total {entity_name}", total_entities)
+    c3.metric(f"Avg {entity_name}/image", f"{avg_entities:.2f}")
+
+
 def handle_single_image(model: Any, class_names: List[str], use_vgg_preprocess: bool) -> None:
     snapshot = st.camera_input("Capture one image (webcam)")
     if snapshot is None:
@@ -526,9 +595,29 @@ def handle_single_image(model: Any, class_names: List[str], use_vgg_preprocess: 
     annotated = annotate_image(img_rgb, detections, color=(0, 200, 0))
 
     st.image(annotated, caption="Detected hands", use_container_width=True)
-    st.write(f"Hands detected: {len(detections)}")
-    for i, det in enumerate(detections, start=1):
-        st.write(f"{i}. **{det['label']}** - {det['confidence'] * 100:.2f}%")
+    if detections:
+        best = max(detections, key=lambda d: float(d.get("confidence", 0.0)))
+        render_result_card(
+            title="Hand result",
+            label=str(best["label"]),
+            confidence=float(best["confidence"]),
+            count_text="Hands detected",
+            status_text=str(len(detections)),
+        )
+    else:
+        st.markdown("<div class='result-muted'>No hands detected.</div>", unsafe_allow_html=True)
+    st.dataframe(
+        [
+            {
+                "No.": i,
+                "Label": str(det["label"]),
+                "Confidence (%)": round(float(det["confidence"]) * 100, 2),
+            }
+            for i, det in enumerate(detections, start=1)
+        ],
+        use_container_width=True,
+        hide_index=True,
+    )
 
 
 def handle_multiple_images(model: Any, class_names: List[str], use_vgg_preprocess: bool) -> None:
@@ -543,18 +632,26 @@ def handle_multiple_images(model: Any, class_names: List[str], use_vgg_preproces
         return
 
     st.subheader("Results")
+    per_image_counts: List[int] = []
     cols = st.columns(3)
     for i, (name, img_rgb) in enumerate(items):
         detections = predict_hand_multi(img_rgb, model, class_names, use_vgg_preprocess=use_vgg_preprocess)
+        per_image_counts.append(len(detections))
         annotated = annotate_image(img_rgb, detections, color=(0, 200, 0))
         with cols[i % 3]:
             st.image(annotated, caption=name, use_container_width=True)
             if detections:
                 best = max(detections, key=lambda d: float(d.get("confidence", 0.0)))
-                st.write(f"**{best['label']}**")
-                st.caption(f"{best['confidence'] * 100:.2f}%")
+                render_result_card(
+                    title="Top hand class",
+                    label=str(best["label"]),
+                    confidence=float(best["confidence"]),
+                    count_text="Hands detected",
+                    status_text=str(len(detections)),
+                )
             else:
-                st.caption("No hands detected")
+                st.markdown("<div class='result-muted'>No hands detected.</div>", unsafe_allow_html=True)
+    render_batch_overview(per_image_counts, "hands")
 
 
 def handle_video(model: Any, class_names: List[str], use_vgg_preprocess: bool) -> None:
@@ -628,9 +725,29 @@ def handle_emotion_single_image(model: Any, use_vgg_preprocess: bool) -> None:
     annotated = annotate_image(img_rgb, detections, color=(200, 0, 0))
 
     st.image(annotated, caption="Detected faces", use_container_width=True)
-    st.write(f"Faces detected: {len(detections)}")
-    for i, det in enumerate(detections, start=1):
-        st.write(f"{i}. **{det['label']}** - {det['confidence'] * 100:.2f}%")
+    if detections:
+        best = max(detections, key=lambda d: float(d.get("confidence", 0.0)))
+        render_result_card(
+            title="Emotion result",
+            label=str(best["label"]),
+            confidence=float(best["confidence"]),
+            count_text="Faces detected",
+            status_text=str(len(detections)),
+        )
+    else:
+        st.markdown("<div class='result-muted'>No faces detected.</div>", unsafe_allow_html=True)
+    st.dataframe(
+        [
+            {
+                "No.": i,
+                "Label": str(det["label"]),
+                "Confidence (%)": round(float(det["confidence"]) * 100, 2),
+            }
+            for i, det in enumerate(detections, start=1)
+        ],
+        use_container_width=True,
+        hide_index=True,
+    )
 
 
 def handle_emotion_multiple_images(model: Any, use_vgg_preprocess: bool) -> None:
@@ -645,18 +762,26 @@ def handle_emotion_multiple_images(model: Any, use_vgg_preprocess: bool) -> None
         return
 
     st.subheader("Emotion results")
+    per_image_counts: List[int] = []
     cols = st.columns(3)
     for i, (name, img_rgb) in enumerate(items):
         detections = predict_emotion_multi(img_rgb, model, use_vgg_preprocess=use_vgg_preprocess)
+        per_image_counts.append(len(detections))
         annotated = annotate_image(img_rgb, detections, color=(200, 0, 0))
         with cols[i % 3]:
             st.image(annotated, caption=name, use_container_width=True)
             if detections:
                 best = max(detections, key=lambda d: float(d.get("confidence", 0.0)))
-                st.write(f"**{best['label']}**")
-                st.caption(f"{best['confidence'] * 100:.2f}%")
+                render_result_card(
+                    title="Top emotion",
+                    label=str(best["label"]),
+                    confidence=float(best["confidence"]),
+                    count_text="Faces detected",
+                    status_text=str(len(detections)),
+                )
             else:
-                st.caption("No faces detected")
+                st.markdown("<div class='result-muted'>No faces detected.</div>", unsafe_allow_html=True)
+    render_batch_overview(per_image_counts, "faces")
 
 
 def _collect_multi_rgb_images(
